@@ -41,7 +41,7 @@ class TemplateGraphState(TypedDict, total=False):
     prompt_content: str
     pattern_content: str
     assembled_prompt: str
-    stage: str  # "project_overview" | "technical_overview"
+    stage: str  # "project_overview" | "technical_overview" | "sow"
     reply: str
     provider: str
     error: Optional[str]
@@ -327,6 +327,30 @@ async def fetch_pattern_doc_by_name(name: str) -> Optional[Dict]:
         return None
 
 # Template Graph implementation
+PROJECT_APPROVAL_Q = "Do you approve of the Project Overview as written?"
+TECH_APPROVAL_Q = "Do you approve of the Technical Overview as written?"
+
+def _find_latest_assistant_before_question(history: List[Dict[str, str]], question: str) -> str:
+    """Return the last assistant content that appears before the specified question bubble.
+    If no question is found, returns the last assistant content in history.
+    If question is None/empty, behaves as last assistant content.
+    """
+    if not history:
+        return ""
+    idx_of_question = -1
+    for i in range(len(history) - 1, -1, -1):
+        msg = history[i]
+        if msg.get("role") == "assistant" and question and question in (msg.get("content") or ""):
+            idx_of_question = i
+            break
+    # Search backwards for previous assistant content before the question index (or from end if not found)
+    start_idx = (idx_of_question - 1) if idx_of_question >= 0 else (len(history) - 1)
+    for j in range(start_idx, -1, -1):
+        m = history[j]
+        if m.get("role") == "assistant" and m.get("content") and (not question or m.get("content") != question):
+            return m.get("content")
+    return ""
+
 async def _node_fetch_resources(state: TemplateGraphState) -> TemplateGraphState:
     """Fetch the hardcoded prompt and pattern doc from database"""
     # Determine which prompt to use based on stage
@@ -334,6 +358,9 @@ async def _node_fetch_resources(state: TemplateGraphState) -> TemplateGraphState
     if stage == "technical_overview":
         prompt_name = "technicalOverviewGenerator"
         pattern_name = None  # No pattern provided for technical overview (optional)
+    elif stage == "sow":
+        prompt_name = "SOWGenerator"
+        pattern_name = "SOWTemplate"
     else:
         prompt_name = "projectOverviewGenerator"
         pattern_name = "projectOverviewTemplate"
@@ -365,20 +392,16 @@ async def _node_assemble_prompt(state: TemplateGraphState) -> TemplateGraphState
     stage = state.get("stage") or "project_overview"
     
     if stage == "technical_overview":
-        # Use the previously generated Project Overview from conversation history
+        # Use the previously generated Project Overview (assistant message before its approval question)
         history = state.get("conversation_history", [])
-        last_assistant = ""
-        for msg in reversed(history):
-            if msg.get("role") == "assistant" and msg.get("content"):
-                last_assistant = msg["content"]
-                break
+        approved_project_overview = _find_latest_assistant_before_question(history, PROJECT_APPROVAL_Q)
         assembled = f"""You are generating a Technical Overview based on an approved Project Overview.
 
 PROMPT:
 {prompt_content}
 
 APPROVED PROJECT OVERVIEW (use as the authoritative context):
-{last_assistant}
+{approved_project_overview}
 
 ADDITIONAL USER INPUT (may contain constraints or clarifications):
 {user_msg}
@@ -390,6 +413,40 @@ INSTRUCTIONS:
 """
         state["assembled_prompt"] = assembled
         logger.info("Assembled prompt for technical overview stage")
+        return state
+
+    if stage == "sow":
+        # Use approved Project Overview and Technical Overview from history
+        history = state.get("conversation_history", [])
+        approved_tech_overview = _find_latest_assistant_before_question(history, TECH_APPROVAL_Q)
+        # For project overview, find content before its approval question (earlier in history)
+        approved_project_overview = _find_latest_assistant_before_question(history, PROJECT_APPROVAL_Q)
+
+        assembled = f"""You are generating a Statement of Work (SOW) based on approved Project and Technical Overviews.
+
+PROMPT TEMPLATE:
+{prompt_content}
+
+PATTERN DOCUMENT EXAMPLE (structure only; do NOT copy any literal text or labels):
+{pattern_content}
+
+APPROVED PROJECT OVERVIEW:
+{approved_project_overview}
+
+APPROVED TECHNICAL OVERVIEW:
+{approved_tech_overview}
+
+ADDITIONAL USER INPUT (may contain constraints or clarifications):
+{user_msg}
+
+INSTRUCTIONS:
+1. Use the PATTERN DOCUMENT only as a structural guide (headings/sections/order). Do NOT copy its literal text, labels, or the phrase "Pattern Document" into your output
+2. Replace all placeholders/examples from the pattern with real content specific to the project. Do NOT leave any placeholder markers (e.g., [Placeholder], <...>, { ... }) in the output
+3. Produce the final SOW as a polished deliverable for stakeholders. Do NOT include meta text like "template" or "pattern"
+4. Be thorough and professional, and keep consistent with the PROMPT TEMPLATE's guidance
+"""
+        state["assembled_prompt"] = assembled
+        logger.info("Assembled prompt for SOW stage")
         return state
     
     assembled = f"""You are processing a user request with specific guidance and formatting requirements.
@@ -429,9 +486,11 @@ async def _node_generate_template_response(state: TemplateGraphState) -> Templat
         # Call existing generate_ai_response with assembled prompt
         response, provider = await generate_ai_response(assembled, history)
         if stage == "project_overview":
-            # Return project overview only; provide approval question separately
             state["reply"] = response
-            state["follow_up_question"] = "Do you approve of the Project Overview as written?"
+            state["follow_up_question"] = PROJECT_APPROVAL_Q
+        elif stage == "technical_overview":
+            state["reply"] = response
+            state["follow_up_question"] = TECH_APPROVAL_Q
         else:
             state["reply"] = response
         state["provider"] = provider
@@ -585,7 +644,10 @@ async def template_graph_run(req: TemplateGraphRequest):
             )
             return TemplateGraphResponse(ok=True, reply=instruction, provider="system")
 
-        # Determine stage: default project_overview; if user approves and history shows approval prompt, run technical_overview
+        # Determine stage based on history and user message:
+        # - default project_overview
+        # - if user approves project overview, run technical_overview
+        # - if user approves technical overview, run sow
         def is_affirmative(text: str) -> bool:
             t = (text or "").strip().lower()
             return any(
@@ -596,12 +658,24 @@ async def template_graph_run(req: TemplateGraphRequest):
             )
 
         stage = "project_overview"
-        # Check history for the approval question
+        # Check history for approval questions
+        saw_project_approval = False
+        saw_tech_approval = False
         for msg in reversed(req.conversation_history):
-            if msg.get("role") == "assistant" and msg.get("content") and "Do you approve of the Project Overview as written?" in msg["content"]:
-                if is_affirmative(req.message):
-                    stage = "technical_overview"
+            content = msg.get("content") or ""
+            if msg.get("role") != "assistant":
+                continue
+            if not saw_project_approval and PROJECT_APPROVAL_Q in content:
+                saw_project_approval = True
+            if not saw_tech_approval and TECH_APPROVAL_Q in content:
+                saw_tech_approval = True
+            if saw_project_approval and saw_tech_approval:
                 break
+
+        if saw_tech_approval and is_affirmative(req.message):
+            stage = "sow"
+        elif saw_project_approval and is_affirmative(req.message):
+            stage = "technical_overview"
 
         state: TemplateGraphState = {
             "user_message": req.message,

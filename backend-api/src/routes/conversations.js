@@ -274,9 +274,12 @@ async function generateLangGraphResponse(
     if (useTemplate) {
       endpointPath = "/graphs/template/run";
     } else {
-      // Heuristic: if last assistant message asked for approval, route to template graph
+      // Heuristic: if last assistant message asked for any approval, route to template graph
       const lastAssistant = [...formattedHistory].reverse().find((m) => m.role === "assistant");
-      const askedApproval = lastAssistant && typeof lastAssistant.content === "string" && lastAssistant.content.includes("Do you approve of the Project Overview as written?");
+      const content = (lastAssistant && typeof lastAssistant.content === "string") ? lastAssistant.content : "";
+      const askedProjectApproval = content.includes("Do you approve of the Project Overview as written?");
+      const askedTechApproval = content.includes("Do you approve of the Technical Overview as written?");
+      const askedApproval = askedProjectApproval || askedTechApproval;
       endpointPath = askedApproval ? "/graphs/template/run" : (useChatGraph ? "/graphs/chat/run" : "/chat");
     }
     
