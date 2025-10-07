@@ -1,0 +1,38 @@
+{
+  "name": "backend-api",
+  "version": "0.0.1",
+  "description": "E C Project Launchpad Backend API",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
+    "build": "echo 'No build step required for Node.js'"
+  },
+  "jest": {
+    "preset": "default",
+    "extensionsToTreatAsEsm": [
+      ".js"
+    ],
+    "globals": {
+      "NODE_ENV": "test"
+    },
+    "transform": {},
+    "testEnvironment": "node"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.3",
+    "nodemon": "^3.0.1"
+  }
+}

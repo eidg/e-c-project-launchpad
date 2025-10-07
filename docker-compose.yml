@@ -1,0 +1,123 @@
+# Docker Compose configuration for E C Project Launchpad
+# Environment variables are loaded from ../.env (root directory)
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: e_c_project_launchpad
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/migrate:/docker-entrypoint-initdb.d
+    networks:
+      clio-network:
+        aliases:
+          - db.local
+
+  adminer:
+    image: adminer:4.8.1
+    ports:
+      - "8080:8080"
+    networks:
+      - clio-network
+    depends_on:
+      - postgres
+
+  backend-api:
+    build:
+      context: ./backend-api
+      dockerfile: Dockerfile
+      args:
+        VERSION: "0.0.1"
+    image: e-c-project-launchpad/backend-api:0.0.1
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db.local:5432/e_c_project_launchpad
+      NODE_ENV: production
+      ACCESS_SECRET: "your-super-secret-access-key-change-in-production"
+      REFRESH_SECRET: "your-super-secret-refresh-key-change-in-production"
+      PORT: 4000
+      LANGGRAPH_SERVICE_URL: http://langgraph.local:5000
+      MCP_SERVICE_URL: http://mcp.local:5100
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./data:/app/data:ro
+    networks:
+      clio-network:
+        aliases:
+          - api.local
+    depends_on:
+      - postgres
+      - langgraph-service
+    labels:
+      - "org.opencontainers.image.version=0.0.1"
+
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VERSION: "0.0.1"
+    image: e-c-project-launchpad/frontend:0.0.1
+    ports:
+      - "3000:3000"
+    networks:
+      clio-network:
+        aliases:
+          - frontend.local
+    labels:
+      - "org.opencontainers.image.version=0.0.1"
+
+  langgraph-service:
+    build:
+      context: ./langgraph-service
+      dockerfile: Dockerfile
+      args:
+        VERSION: "0.0.1"
+    image: e-c-project-launchpad/langgraph-service:0.0.1
+    ports:
+      - "5001:5000"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      DATABASE_URL: postgresql://postgres:postgres@db.local:5432/e_c_project_launchpad
+    networks:
+      clio-network:
+        aliases:
+          - langgraph.local
+    depends_on:
+      - postgres
+    labels:
+      - "org.opencontainers.image.version=0.0.1"
+
+  mcp-service:
+    build:
+      context: ./mcp-service
+      dockerfile: Dockerfile
+      args:
+        VERSION: "0.0.1"
+    image: e-c-project-launchpad/mcp-service:0.0.1
+    ports:
+      - "5100:5100"
+    networks:
+      clio-network:
+        aliases:
+          - mcp.local
+    labels:
+      - "org.opencontainers.image.version=0.0.1"
+
+
+networks:
+  clio-network:
+    driver: bridge
+
+volumes:
+  postgres_data:

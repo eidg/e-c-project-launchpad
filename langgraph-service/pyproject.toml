@@ -1,0 +1,28 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "langgraph-service"
+version = "0.0.1"
+description = "E C Project Launchpad LangGraph Service"
+authors = ["EIDG <dev@eidg.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.104.1"
+uvicorn = "^0.24.0"
+pydantic = "^2.4.2"
+httpx = "^0.25.0"
+python-dotenv = "^1.0.0"
+openai = "^1.0.0"
+anthropic = "^0.18.0"
+langgraph = "^0.2.34"
+langchain-core = "^0.2.40"
+asyncpg = "^0.29.0"
+# Removed: tavily-python, duckduckgo-search
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.3"
+pytest-cov = "^4.1.0"

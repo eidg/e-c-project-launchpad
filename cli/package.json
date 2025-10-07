@@ -1,0 +1,32 @@
+{
+  "name": "e-c-project-launchpad-cli",
+  "version": "0.0.1",
+  "description": "E C Project Launchpad CLI Scaffolder",
+  "main": "bin/index.js",
+  "type": "module",
+  "bin": {
+    "e-c-project-launchpad": "./bin/index.js"
+  },
+  "scripts": {
+    "test": "jest"
+  },
+  "dependencies": {
+    "commander": "^11.0.0",
+    "prompts": "^2.4.2",
+    "fs-extra": "^11.1.1",
+    "chalk": "^5.3.0",
+    "ora": "^7.0.1",
+    "simple-git": "^3.20.0",
+    "@octokit/rest": "^20.0.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "keywords": [
+    "cli",
+    "scaffolder",
+    "e-c-project-launchpad"
+  ],
+  "author": "EIDG",
+  "license": "MIT"
+}

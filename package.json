@@ -1,0 +1,34 @@
+{
+  "name": "e-c-project-launchpad",
+  "version": "0.0.1",
+  "description": "A real-time chat application with AI workflow orchestration using LangGraph",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter backend-api dev\" \"pnpm --filter frontend dev\"",
+    "build": "pnpm --filter backend-api build && pnpm --filter frontend build",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:all": "concurrently \"pnpm --filter backend-api test\" \"pnpm --filter langgraph-service test\" \"pnpm --filter frontend test\"",
+    "smoke": "bash scripts/smoke/container-status.sh",
+    "lint": "eslint '**/*.{js,jsx,ts,tsx}' --fix",
+    "format": "prettier --write '**/*.{js,jsx,ts,tsx,json,md}'",
+    "prepare": "husky"
+  },
+  "keywords": [
+    "chat",
+    "ai",
+    "langgraph",
+    "websockets",
+    "microservices"
+  ],
+  "author": "EIDG",
+  "license": "MIT",
+  "packageManager": "pnpm@10.14.0",
+  "devDependencies": {
+    "concurrently": "^9.2.0",
+    "cross-env": "^10.0.0",
+    "eslint": "^9.32.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.4",
+    "prettier": "^3.6.2"
+  }
+}

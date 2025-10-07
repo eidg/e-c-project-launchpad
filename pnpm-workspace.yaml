@@ -1,0 +1,6 @@
+packages:
+  - "backend-api"
+  - "langgraph-service"
+  - "frontend"
+  - "mcp-service"
+  - "cli"
