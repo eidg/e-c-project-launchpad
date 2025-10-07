@@ -41,9 +41,11 @@ class TemplateGraphState(TypedDict, total=False):
     prompt_content: str
     pattern_content: str
     assembled_prompt: str
+    stage: str  # "project_overview" | "technical_overview"
     reply: str
     provider: str
     error: Optional[str]
+    follow_up_question: Optional[str]
 
 class ChatGraphRequest(BaseModel):
     message: str
@@ -161,11 +163,17 @@ def get_ai_client():
 async def generate_ai_response_openai(client: AsyncOpenAI, messages: List[Dict[str, str]]) -> str:
     """Generate response using OpenAI."""
     try:
+        model_name = os.getenv("OPENAI_MODEL", "gpt-4o")
+        max_tokens_env = os.getenv("OPENAI_MAX_TOKENS", "4000")
+        try:
+            max_tokens = int(max_tokens_env)
+        except ValueError:
+            max_tokens = 4000
         response = await client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model=model_name,
             messages=messages,
             temperature=0.7,
-            max_tokens=1000
+            max_tokens=max_tokens
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -175,6 +183,11 @@ async def generate_ai_response_openai(client: AsyncOpenAI, messages: List[Dict[s
 async def generate_ai_response_anthropic(client: AsyncAnthropic, messages: List[Dict[str, str]]) -> str:
     """Generate response using Anthropic."""
     try:
+        max_tokens_env = os.getenv("OPENAI_MAX_TOKENS", "4000")
+        try:
+            max_tokens = int(max_tokens_env)
+        except ValueError:
+            max_tokens = 4000
         # Anthropic requires system message to be separate
         system_message = ""
         user_messages = []
@@ -187,7 +200,7 @@ async def generate_ai_response_anthropic(client: AsyncAnthropic, messages: List[
         
         response = await client.messages.create(
             model="claude-3-haiku-20240307",
-            max_tokens=1000,
+            max_tokens=max_tokens,
             temperature=0.7,
             system=system_message,
             messages=user_messages
@@ -316,21 +329,29 @@ async def fetch_pattern_doc_by_name(name: str) -> Optional[Dict]:
 # Template Graph implementation
 async def _node_fetch_resources(state: TemplateGraphState) -> TemplateGraphState:
     """Fetch the hardcoded prompt and pattern doc from database"""
-    # Hardcoded names for Phase 1
-    prompt_name = "cat"
-    pattern_name = "catDoc"
+    # Determine which prompt to use based on stage
+    stage = state.get("stage") or "project_overview"
+    if stage == "technical_overview":
+        prompt_name = "technicalOverviewGenerator"
+        pattern_name = None  # No pattern provided for technical overview (optional)
+    else:
+        prompt_name = "projectOverviewGenerator"
+        pattern_name = "projectOverviewTemplate"
     
     prompt = await fetch_prompt_by_name(prompt_name)
-    pattern = await fetch_pattern_doc_by_name(pattern_name)
+    pattern = None
+    if pattern_name:
+        pattern = await fetch_pattern_doc_by_name(pattern_name)
     
-    if not prompt or not pattern:
+    if not prompt or (pattern_name and not pattern):
         state["error"] = f"Missing resources: prompt={bool(prompt)}, pattern={bool(pattern)}"
         logger.error(state["error"])
         return state
     
     state["prompt_content"] = prompt["content"]
-    state["pattern_content"] = pattern["content"]
-    logger.info(f"Fetched prompt '{prompt_name}' and pattern '{pattern_name}'")
+    if pattern:
+        state["pattern_content"] = pattern["content"]
+    logger.info(f"Fetched prompt '{prompt_name}'" + (f" and pattern '{pattern_name}'" if pattern_name else ""))
     return state
 
 async def _node_assemble_prompt(state: TemplateGraphState) -> TemplateGraphState:
@@ -341,23 +362,52 @@ async def _node_assemble_prompt(state: TemplateGraphState) -> TemplateGraphState
     user_msg = state.get("user_message", "")
     prompt_content = state.get("prompt_content", "")
     pattern_content = state.get("pattern_content", "")
+    stage = state.get("stage") or "project_overview"
+    
+    if stage == "technical_overview":
+        # Use the previously generated Project Overview from conversation history
+        history = state.get("conversation_history", [])
+        last_assistant = ""
+        for msg in reversed(history):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                last_assistant = msg["content"]
+                break
+        assembled = f"""You are generating a Technical Overview based on an approved Project Overview.
+
+PROMPT:
+{prompt_content}
+
+APPROVED PROJECT OVERVIEW (use as the authoritative context):
+{last_assistant}
+
+ADDITIONAL USER INPUT (may contain constraints or clarifications):
+{user_msg}
+
+INSTRUCTIONS:
+1. Generate a thorough, professional Technical Overview aligned with the approved Project Overview
+2. Be explicit about architecture, components, integrations, data flows, risks, and trade-offs
+3. Use clear headers and markdown; be concise but comprehensive
+"""
+        state["assembled_prompt"] = assembled
+        logger.info("Assembled prompt for technical overview stage")
+        return state
     
     assembled = f"""You are processing a user request with specific guidance and formatting requirements.
 
 PROMPT TEMPLATE:
 {prompt_content}
 
-PATTERN DOCUMENT (use this format for your response):
+PATTERN DOCUMENT EXAMPLE (structure only; do NOT copy any literal text or labels):
 {pattern_content}
 
 USER REQUEST:
 {user_msg}
 
 INSTRUCTIONS:
-1. Address the user's request while following the guidance in the PROMPT TEMPLATE
-2. Structure your response to match the format shown in the PATTERN DOCUMENT
-3. Be thorough and professional
-4. Maintain consistency with the template requirements
+1. Use the PATTERN DOCUMENT only as a structural guide (headings/sections/order). Do NOT copy its literal text, labels, or the phrase "Pattern Document" into your output
+2. Replace all placeholders/examples from the pattern with real content specific to the user's request. Do NOT leave any placeholder markers (e.g., [Placeholder], <...>, { ... }) in the output
+3. Produce the final Project Overview as a polished deliverable for stakeholders. Do NOT include meta text like "template" or "pattern"
+4. Be thorough and professional, and keep consistent with the PROMPT TEMPLATE's guidance
 """
     
     state["assembled_prompt"] = assembled
@@ -373,11 +423,17 @@ async def _node_generate_template_response(state: TemplateGraphState) -> Templat
     
     assembled = state.get("assembled_prompt", "")
     history = state.get("conversation_history", [])
+    stage = state.get("stage") or "project_overview"
     
     try:
         # Call existing generate_ai_response with assembled prompt
         response, provider = await generate_ai_response(assembled, history)
-        state["reply"] = response
+        if stage == "project_overview":
+            # Return project overview only; provide approval question separately
+            state["reply"] = response
+            state["follow_up_question"] = "Do you approve of the Project Overview as written?"
+        else:
+            state["reply"] = response
         state["provider"] = provider
         logger.info(f"Generated template response using {provider}")
     except Exception as e:
@@ -503,8 +559,8 @@ async def template_graph_health():
     """Health check for template graph"""
     try:
         # Quick validation that resources exist
-        prompt = await fetch_prompt_by_name("cat")
-        pattern = await fetch_pattern_doc_by_name("catDoc")
+        prompt = await fetch_prompt_by_name("projectOverviewGenerator")
+        pattern = await fetch_pattern_doc_by_name("projectOverviewTemplate")
         ok = bool(prompt and pattern)
         return {
             "ok": ok,
@@ -519,19 +575,52 @@ async def template_graph_health():
 async def template_graph_run(req: TemplateGraphRequest):
     """Run template-based response graph"""
     try:
+        # Handle template start flow: instruct user to paste notes
+        start_tokens = {"/template", "__TEMPLATE_START__"}
+        if req.message.strip() in start_tokens:
+            instruction = (
+                "Template mode started. Please paste your complete project notes in a single message.\n\n"
+                "Include: goals, scope, stakeholders, timelines, milestones, constraints/risks, tech stack, and any relevant context.\n\n"
+                "When you send your notes, I'll generate a formatted project overview using the projectOverview template."
+            )
+            return TemplateGraphResponse(ok=True, reply=instruction, provider="system")
+
+        # Determine stage: default project_overview; if user approves and history shows approval prompt, run technical_overview
+        def is_affirmative(text: str) -> bool:
+            t = (text or "").strip().lower()
+            return any(
+                phrase in t
+                for phrase in [
+                    "yes", "yep", "yeah", "approve", "looks good", "lgmt", "lgtm", "sounds good", "proceed", "go ahead", "i approve"
+                ]
+            )
+
+        stage = "project_overview"
+        # Check history for the approval question
+        for msg in reversed(req.conversation_history):
+            if msg.get("role") == "assistant" and msg.get("content") and "Do you approve of the Project Overview as written?" in msg["content"]:
+                if is_affirmative(req.message):
+                    stage = "technical_overview"
+                break
+
         state: TemplateGraphState = {
             "user_message": req.message,
-            "conversation_history": req.conversation_history
+            "conversation_history": req.conversation_history,
+            "stage": stage,
         }
         result = await get_template_graph().ainvoke(state)
         
         if result.get("error"):
             raise HTTPException(status_code=500, detail=result["error"])
         
+        meta: Dict[str, Any] = {}
+        if result.get("follow_up_question"):
+            meta["follow_up_question"] = result.get("follow_up_question")
         return TemplateGraphResponse(
             ok=True,
             reply=result.get("reply", ""),
-            provider=result.get("provider", "unknown")
+            provider=result.get("provider", "unknown"),
+            meta=meta
         )
     except HTTPException:
         raise

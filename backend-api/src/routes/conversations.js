@@ -202,7 +202,7 @@ router.post("/:conversationId/chat", authMiddleware, async (req, res) => {
     const conversationHistory = messagesResult.rows;
 
     // Generate AI response using LangGraph service
-    const aiResponse = await generateLangGraphResponse(
+    const aiResult = await generateLangGraphResponse(
       message,
       conversationHistory,
       req.userId,
@@ -210,12 +210,15 @@ router.post("/:conversationId/chat", authMiddleware, async (req, res) => {
       useTemplate,
     );
 
-    // Save the AI response to the database
+    // Determine reply content
+    const replyContent = typeof aiResult === "string" ? aiResult : (aiResult.reply || "");
+
+    // Save the AI primary response to the database
     const responseResult = await pool.query(
       `INSERT INTO messages (conversation_id, role, content)
        VALUES ($1, $2, $3)
        RETURNING id, role, content, created_at`,
-      [conversationId, "assistant", aiResponse],
+      [conversationId, "assistant", replyContent],
     );
 
     // Update conversation timestamp
@@ -224,9 +227,22 @@ router.post("/:conversationId/chat", authMiddleware, async (req, res) => {
       [conversationId],
     );
 
+    // If graph returned a follow-up approval question, insert it as a separate assistant message
+    let followUpMessage = null;
+    if (aiResult && aiResult.meta && aiResult.meta.follow_up_question) {
+      const f = await pool.query(
+        `INSERT INTO messages (conversation_id, role, content)
+         VALUES ($1, $2, $3)
+         RETURNING id, role, content, created_at`,
+        [conversationId, "assistant", aiResult.meta.follow_up_question],
+      );
+      followUpMessage = f.rows[0];
+    }
+
     res.json({
-      response: aiResponse,
+      response: replyContent,
       message: responseResult.rows[0],
+      followUp: followUpMessage,
     });
   } catch (error) {
     console.error("Error generating chat response:", error);
@@ -253,12 +269,15 @@ async function generateLangGraphResponse(
       content: msg.content,
     }));
 
-    // Choose endpoint based on template flag
+    // Choose endpoint based on template flag or inferred approval flow
     let endpointPath;
     if (useTemplate) {
       endpointPath = "/graphs/template/run";
     } else {
-      endpointPath = useChatGraph ? "/graphs/chat/run" : "/chat";
+      // Heuristic: if last assistant message asked for approval, route to template graph
+      const lastAssistant = [...formattedHistory].reverse().find((m) => m.role === "assistant");
+      const askedApproval = lastAssistant && typeof lastAssistant.content === "string" && lastAssistant.content.includes("Do you approve of the Project Overview as written?");
+      endpointPath = askedApproval ? "/graphs/template/run" : (useChatGraph ? "/graphs/chat/run" : "/chat");
     }
     
     const response = await fetch(`${langGraphUrl}${endpointPath}`, {
@@ -266,19 +285,11 @@ async function generateLangGraphResponse(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(
-        useTemplate || useChatGraph
-          ? {
-              message: userMessage,
-              conversation_history: formattedHistory,
-            }
-          : {
-              message: userMessage,
-              conversation_history: formattedHistory,
-              user_id: userId,
-              conversation_id: conversationId,
-            },
-      ),
+      body: JSON.stringify({
+        message: userMessage,
+        conversation_history: formattedHistory,
+        ...(endpointPath === "/chat" ? { user_id: userId, conversation_id: conversationId } : {}),
+      }),
     });
 
     if (!response.ok) {
@@ -289,17 +300,18 @@ async function generateLangGraphResponse(
     }
 
     const data = await response.json();
-    if (useTemplate || useChatGraph) {
-      const graphType = useTemplate ? "template" : "chat";
+    // For graph endpoints, return the full object (reply, provider, ok, meta)
+    if (endpointPath.startsWith("/graphs/")) {
+      const graphType = endpointPath.includes("template") ? "template" : "chat";
       console.log(`Generated response via ${graphType} graph (provider=${data.provider})`);
       if (data.ok !== true) {
         throw new Error(`${graphType} graph returned not ok`);
       }
-      return data.reply;
-    } else {
-      console.log(`Generated response using ${data.provider} provider`);
-      return data.response;
+      return data; // includes reply and optional meta.follow_up_question
     }
+    // Legacy /chat path returns plain structure
+    console.log(`Generated response using ${data.provider} provider`);
+    return { reply: data.response, provider: data.provider };
   } catch (error) {
     console.error("Error calling LangGraph service:", error);
 

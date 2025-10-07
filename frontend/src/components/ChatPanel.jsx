@@ -301,8 +301,37 @@ export default function ChatPanelDemo({ embedded = false }) {
     try {
       // Check for /template command
       if (text.trim() === "/template") {
+        // Enter template mode and immediately request instructions from the graph
         setTemplateMode(true);
-        // Optionally add a system-like message to indicate mode activation
+
+        // Ensure a conversation exists
+        let convId = currentConversation?.id;
+        if (!convId) {
+          const newConv = await createNewConversation("New Chat");
+          if (!newConv) return;
+          convId = newConv.id;
+        }
+
+        // Ask the template graph to start by instructing the user to paste notes
+        setIsStreaming(true);
+        const resp = await fetch(`/api/conversations/${convId}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            message: "/template",
+            useTemplate: true,
+          }),
+        });
+
+        if (resp.ok) {
+          await selectConversation(convId);
+        } else {
+          console.error("Template start failed", await safeText(resp));
+        }
+
+        setIsStreaming(false);
+        // Keep templateMode true so the next user message (notes) triggers generation
         return;
       }
 
@@ -601,6 +630,7 @@ export function ChatPanel({
                 onSend={onSend}
                 onStop={onStop}
                 isStreaming={isStreaming}
+            placeholder={templateMode ? "Paste your project notes here…" : "Message…"}
               />
             </div>
           </div>
