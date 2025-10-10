@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
+import ProjectOverviewEditor from "./ProjectOverviewEditor";
 
 /**
  * Drop‑in Chat UI (React + Tailwind)
@@ -441,6 +442,11 @@ export function ChatPanel({
 }) {
   const listRef = useRef(null);
   const firstScroll = useRef(true);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorInitial, setEditorInitial] = useState("");
+  const [editorMessageId, setEditorMessageId] = useState(null);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const PROJECT_APPROVAL_Q = "Do you approve of the Project Overview as written?";
 
   useEffect(() => {
     const el = listRef.current;
@@ -611,9 +617,44 @@ export function ChatPanel({
               ref={listRef}
               className="h-full overflow-y-auto py-4 space-y-4 pb-24 px-3 sm:px-6"
             >
-              {messages.map((m) => (
-                <MessageBubble key={m.id} role={m.role} content={m.content} />
-              ))}
+              {messages.map((m, idx) => {
+                const isApprovalQ = m.role === "assistant" && m.content === PROJECT_APPROVAL_Q;
+                const prev = idx > 0 ? messages[idx - 1] : null;
+                const canEditPrev = isApprovalQ && prev && prev.role === "assistant";
+                return (
+                  <div key={m.id} className="space-y-2">
+                    <MessageBubble role={m.role} content={m.content} />
+                    {isApprovalQ && (
+                      <div className="pl-11">{/* align with assistant avatar */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={isSavingEdit || isStreaming}
+                            onClick={() => onSend?.("Yes")}
+                            className="inline-flex items-center gap-1 rounded-md bg-emerald-600 text-white px-2.5 py-1.5 text-xs font-medium shadow hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-400 disabled:opacity-60"
+                          >
+                            Approve
+                          </button>
+                          {canEditPrev && (
+                            <button
+                              type="button"
+                              disabled={isSavingEdit || isStreaming}
+                              onClick={() => {
+                                setEditorMessageId(prev.id);
+                                setEditorInitial(prev.content || "");
+                                setEditorOpen(true);
+                              }}
+                              className="inline-flex items-center gap-1 rounded-md bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100 px-2.5 py-1.5 text-xs font-medium shadow hover:bg-zinc-300 dark:hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-zinc-400 disabled:opacity-60"
+                            >
+                              Edit
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
               {isStreaming && (
                 <div className="w-full flex justify-start">
                   <TypingDots />
@@ -636,6 +677,38 @@ export function ChatPanel({
           </div>
         </div>
       </div>
+      {/* Editor Modal */}
+      <ProjectOverviewEditor
+        open={editorOpen}
+        initialContent={editorInitial}
+        onCancel={() => setEditorOpen(false)}
+        onSave={async (nextContent) => {
+          if (!currentConversation?.id || !editorMessageId) return;
+          try {
+            setIsSavingEdit(true);
+            const resp = await fetch(`/api/conversations/${currentConversation.id}/messages/${editorMessageId}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({ content: nextContent }),
+            });
+            if (!resp.ok) {
+              console.error("Failed to update message", await resp.text());
+              setIsSavingEdit(false);
+              return;
+            }
+            // Refresh to load updated content
+            await onSelectConversation?.(currentConversation.id);
+            setEditorOpen(false);
+            // Auto-approve to advance
+            await onSend?.("Yes");
+          } catch (e) {
+            console.error("Error saving edited overview", e);
+          } finally {
+            setIsSavingEdit(false);
+          }
+        }}
+      />
     </div>
   );
 }

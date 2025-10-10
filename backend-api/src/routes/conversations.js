@@ -338,4 +338,66 @@ function generateFallbackResponse(userMessage) {
   }
 }
 
+// Update a message's content (assistant-only, not the approval question)
+router.patch(
+  "/:conversationId/messages/:messageId",
+  authMiddleware,
+  async (req, res) => {
+    try {
+      const { conversationId, messageId } = req.params;
+      const { content } = req.body || {};
+
+      if (!content || !String(content).trim()) {
+        return res.status(400).json({ error: "Content is required" });
+      }
+
+      // Verify conversation ownership
+      const convResult = await pool.query(
+        "SELECT id FROM conversations WHERE id = $1 AND user_id = $2",
+        [conversationId, req.userId],
+      );
+      if (convResult.rows.length === 0) {
+        return res.status(404).json({ error: "Conversation not found" });
+      }
+
+      // Fetch message to validate editability
+      const msgResult = await pool.query(
+        `SELECT id, role, content FROM messages WHERE id = $1 AND conversation_id = $2`,
+        [messageId, conversationId],
+      );
+      if (msgResult.rows.length === 0) {
+        return res.status(404).json({ error: "Message not found" });
+      }
+
+      const message = msgResult.rows[0];
+      if (message.role !== "assistant") {
+        return res.status(400).json({ error: "Only assistant messages can be edited" });
+      }
+
+      // Prevent editing the approval question itself
+      const PROJECT_APPROVAL_Q = "Do you approve of the Project Overview as written?";
+      if (message.content && message.content.trim() === PROJECT_APPROVAL_Q) {
+        return res.status(400).json({ error: "Cannot edit approval question message" });
+      }
+
+      // Apply update
+      const upd = await pool.query(
+        `UPDATE messages SET content = $1 WHERE id = $2 AND conversation_id = $3 RETURNING id, role, content, created_at`,
+        [String(content).trim(), messageId, conversationId],
+      );
+
+      // Bump conversation updated_at
+      await pool.query(
+        "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+        [conversationId],
+      );
+
+      return res.json({ message: upd.rows[0] });
+    } catch (error) {
+      console.error("Error updating message:", error);
+      return res.status(500).json({ error: "Failed to update message" });
+    }
+  },
+);
+
 export default router;

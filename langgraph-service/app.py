@@ -169,13 +169,62 @@ async def generate_ai_response_openai(client: AsyncOpenAI, messages: List[Dict[s
             max_tokens = int(max_tokens_env)
         except ValueError:
             max_tokens = 4000
-        response = await client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            temperature=0.7,
-            max_tokens=max_tokens
-        )
-        return response.choices[0].message.content
+        # 1) Try Chat Completions API first (works for many models, including your sample)
+        try:
+            response = await client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            # If the model/endpoint isn't supported, fall back to Responses API
+            err_text = (str(e) or "").lower()
+            should_fallback = (
+                "model_not_found" in err_text
+                or "model not found" in err_text
+                or "404" in err_text
+                or "unsupported" in err_text
+                or "this model" in err_text and "not supported" in err_text
+            )
+            if not should_fallback:
+                raise
+
+            # Flatten role-based messages into a single prompt string for Responses API
+            parts: List[str] = []
+            for m in messages:
+                role = (m.get("role") or "").strip().upper()
+                content = m.get("content") or ""
+                if not role or not content:
+                    continue
+                parts.append(f"{role}: {content}")
+            prompt = "\n\n".join(parts)
+
+            resp = await client.responses.create(
+                model=model_name,
+                input=prompt,
+                max_output_tokens=max_tokens,
+            )
+
+            # Robust text extraction across SDK versions
+            text = None
+            if hasattr(resp, "output_text") and isinstance(getattr(resp, "output_text"), str):
+                text = resp.output_text
+            if not text:
+                try:
+                    output = getattr(resp, "output", None)
+                    if output and isinstance(output, list) and output:
+                        first = output[0]
+                        content = getattr(first, "content", None) or first.get("content")
+                        if content and isinstance(content, list) and content:
+                            maybe = content[0]
+                            text = getattr(maybe, "text", None) or maybe.get("text")
+                except Exception:
+                    text = None
+            if not text:
+                text = str(resp)
+            return text or ""
     except Exception as e:
         logger.error(f"OpenAI API error: {e}")
         raise
